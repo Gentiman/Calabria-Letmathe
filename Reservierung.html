@@ -1,0 +1,198 @@
+
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Reservierung – Ristorante Pizzeria Calabria Letmathe</title>
+  <style>
+    *{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu}
+    .wrap{max-width:720px;margin:0 auto;padding:24px}
+    h1{margin:8px 0 16px}
+    form{background:#fafafa;border:1px solid #eee;border-radius:12px;padding:16px}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    label{display:flex;flex-direction:column;gap:6px;font-size:14px}
+    .full{grid-column:1/-1}
+    input,select,textarea,button{padding:10px;border:1px solid #ddd;border-radius:8px;font-size:16px}
+    textarea{min-height:90px;resize:vertical}
+    button{cursor:pointer}
+    .hint{font-size:13px;color:#555}
+    .error{color:#b00020;font-size:14px;margin-top:8px}
+    .ok{color:#117a00;font-size:14px;margin-top:8px}
+    @media (max-width:640px){.grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <h1>Reservierung</h1>
+    <p class="hint">Montag Ruhetag. Di–Sa: 11:30–15:00 &amp; 17:00–22:00 · So: 15:00–22:00</p>
+
+    <form id="resForm" novalidate>
+      <div class="grid">
+        <label> Name* <input name="name" required autocomplete="name"></label>
+        <label> E‑Mail* <input name="email" type="email" required autocomplete="email"></label>
+        <label> Datum* <input name="date" type="date" required></label>
+        <label> Uhrzeit* 
+          <select name="time" required disabled>
+            <option value="">Bitte Datum wählen</option>
+          </select>
+        </label>
+        <label> Personen* <input name="guests" type="number" min="1" value="2" required></label>
+        <label class="full"> Zusätzliche Information (optional)
+          <textarea name="note" placeholder="Allergien, Kinderstuhl, Anlass …"></textarea>
+        </label>
+
+        <!-- DSGVO-Zustimmung -->
+        <label class="full" style="flex-direction:row;align-items:center;gap:10px">
+          <input type="checkbox" name="consent" required>
+          Ich stimme der Verarbeitung meiner Angaben zur Bearbeitung der Reservierung zu.
+        </label>
+
+        <!-- Honeypot gegen Bots -->
+        <input name="website" style="display:none" tabindex="-1" autocomplete="off">
+      </div>
+      <button id="submitBtn">Reservieren</button>
+      <div id="msg" class="error" role="status" aria-live="polite"></div>
+    </form>
+  </main>
+
+  <script>
+    // ------------- EINSTELLEN -------------
+    const ENDPOINT = "HIER_APPS_SCRIPT_WEBAPP_URL_EINFÜGEN"; // z.B. https://script.google.com/macros/s/AKfycb.../exec
+    const THANKYOU_URL = "/danke.html";
+    // --------------------------------------
+
+    const form = document.getElementById('resForm');
+    const timeSelect = form.elements['time'];
+    const dateInput = form.elements['date'];
+    const msg = document.getElementById('msg');
+    const btn = document.getElementById('submitBtn');
+
+    // Öffnungszeiten-Definition
+    const WINDOWS = {
+      // Di–Sa: 11:30–15:00 und 17:00–22:00
+      weekdayA: [{start:"11:30", end:"15:00"}, {start:"17:00", end:"22:00"}],
+      // So: 15:00–22:00
+      sunday:   [{start:"15:00", end:"22:00"}]
+    };
+
+    // Hilfen
+    const pad = n => String(n).padStart(2,'0');
+    const toHM = s => { const [h,m] = s.split(':').map(Number); return {h, m}; };
+    function addMinutes(h, m, add){ 
+      const d = new Date(0,0,0,h,m); d.setMinutes(d.getMinutes()+add);
+      return {h:d.getHours(), m:d.getMinutes()};
+    }
+    function fmt({h,m}){ return pad(h)+":"+pad(m); }
+
+    // Datum: Montag sperren, Mindestdatum = heute
+    (function initDate(){
+      const today = new Date();
+      dateInput.min = today.toISOString().slice(0,10);
+      dateInput.addEventListener('change', updateTimes);
+    })();
+
+    function isMonday(d){ return d.getDay() === 1; }      // 0=So,1=Mo,…
+    function isSunday(d){ return d.getDay() === 0; }
+
+    function updateTimes(){
+      msg.textContent = "";
+      timeSelect.innerHTML = "";
+      timeSelect.disabled = true;
+
+      if(!dateInput.value) return;
+      const d = new Date(dateInput.value+"T00:00:00");
+
+      if(isMonday(d)){
+        const opt = document.createElement('option');
+        opt.value = ""; opt.textContent = "Montag Ruhetag – bitte anderes Datum";
+        timeSelect.appendChild(opt);
+        return;
+      }
+
+      // passende Fenster wählen
+      const windows = isSunday(d) ? WINDOWS.sunday : WINDOWS.weekdayA;
+
+      // Slots in 30-Min-Schritten aufbauen
+      const now = new Date();
+      windows.forEach(w => {
+        let {h:sh, m:sm} = toHM(w.start);
+        const {h:eh, m:em} = toHM(w.end);
+        // iteriere inklusive start, exklusive end
+        while(sh < eh || (sh===eh && sm < em)){
+          const slot = {h:sh, m:sm};
+          const slotStr = fmt(slot);
+
+          // Wenn ausgewähltes Datum == heute: vergangene Slots ausblenden
+          let isPast = false;
+          if(dateInput.value === now.toISOString().slice(0,10)){
+            const slotDT = new Date(now.getFullYear(), now.getMonth(), now.getDate(), slot.h, slot.m);
+            if(slotDT.getTime() < now.getTime()) isPast = true;
+          }
+
+          // nur volle/halbe Stunden erlauben → m ist 00 oder 30 (ist per Schritt ohnehin so)
+          if(!isPast){
+            const opt = document.createElement('option');
+            opt.value = slotStr; opt.textContent = slotStr;
+            timeSelect.appendChild(opt);
+          }
+          ({h:sh, m:sm} = addMinutes(sh, sm, 30));
+        }
+      });
+
+      if(!timeSelect.options.length){
+        const opt = document.createElement('option');
+        opt.value = ""; opt.textContent = "Heute keine Zeiten mehr verfügbar";
+        timeSelect.appendChild(opt);
+      } else {
+        timeSelect.disabled = false;
+      }
+    }
+
+    // Absenden
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      msg.className = "error";
+      msg.textContent = "";
+
+      const data = Object.fromEntries(new FormData(form).entries());
+      if(!data.name || !data.email || !dateInput.value || !data.time || !data.guests){
+        msg.textContent = "Bitte alle Pflichtfelder ausfüllen.";
+        return;
+      }
+      if(!form.consent.checked){
+        msg.textContent = "Bitte der Datenverarbeitung zustimmen.";
+        return;
+      }
+      if(data.website){ return; } // Bot-Honeypot
+
+      btn.disabled = true; btn.textContent = "Senden …";
+      try{
+        const res = await fetch(ENDPOINT, {
+          method: "POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({
+            name: data.name.trim(),
+            email: data.email.trim(),
+            date: dateInput.value,
+            time: data.time,
+            guests: Number(data.guests),
+            note: data.note?.trim() || "",
+            origin: location.origin
+          })
+        });
+        const text = await res.text();
+        if(res.ok && text.includes("OK")){
+          window.location.href = THANKYOU_URL;
+        } else {
+          msg.textContent = "Senden fehlgeschlagen. Bitte später erneut versuchen.";
+        }
+      } catch(err){
+        msg.textContent = "Netzwerkfehler. Bitte später erneut versuchen.";
+      } finally {
+        btn.disabled = false; btn.textContent = "Reservieren";
+      }
+    });
+  </script>
+</body>
+</html>
